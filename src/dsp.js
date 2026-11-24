@@ -45,6 +45,12 @@ export function resample(t, channels, fs) {
 /**
  * POS (Plane-Orthogonal-to-Skin) pulse extraction.
  * Wang, den Brinker, Stuijk, de Haan, IEEE TBME 64(7), 2017.
+ *
+ * Polarity: more blood absorbs more light, so skin gets darker in systole
+ * (pulsatile signature ≈ -[0.33, 0.77, 0.53] in normalised RGB). The raw POS
+ * projection therefore falls in systole; it is negated here so the output
+ * follows the conventional PPG polarity (up = more blood volume), matching
+ * contact pulse oximeters.
  */
 export function pos(r, g, b, fs, windowSec = 1.6) {
   const n = r.length;
@@ -67,7 +73,7 @@ export function pos(r, g, b, fs, windowSec = 1.6) {
     const alpha = sd2 > 1e-12 ? std(s1) / sd2 : 0;
     const p = s1.map((v, i) => v + alpha * s2[i]);
     const mp = mean(p);
-    for (let i = 0; i < l; i++) h[start + i] += p[i] - mp;
+    for (let i = 0; i < l; i++) h[start + i] -= p[i] - mp;
   }
   return h;
 }

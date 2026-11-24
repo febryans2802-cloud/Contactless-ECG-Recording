@@ -8,8 +8,8 @@ function rng(seed = 1) {
 }
 
 /**
- * Simulated skin RGB trace: a pulse that modulates mostly green (as real
- * haemoglobin absorption does), plus a shared intensity drift that POS
+ * Simulated skin RGB trace: blood volume darkens the skin, mostly in green
+ * (relative pulsatile amplitudes ≈ 0.33 : 0.77 : 0.53 for R : G : B), plus a shared intensity drift that POS
  * should cancel, plus sensor noise and jittery frame timing.
  */
 function synth({ bpm = 72, seconds = 20, fps = 30, noise = 0.3, jitter = 0.004, motion = 4, seed = 7 } = {}) {
@@ -21,9 +21,9 @@ function synth({ bpm = 72, seconds = 20, fps = 30, noise = 0.3, jitter = 0.004, 
     const pulse = Math.sin(2 * Math.PI * f * ti) + 0.3 * Math.sin(4 * Math.PI * f * ti - 0.8);
     const illum = 1 + 0.02 * Math.sin(2 * Math.PI * 0.2 * ti) + 0.01 * motion * Math.sin(2 * Math.PI * 0.07 * ti);
     t.push(ti);
-    r.push(illum * (150 + 0.15 * pulse) + noise * rand());
-    g.push(illum * (100 + 0.35 * pulse) + noise * rand());
-    b.push(illum * (80 + 0.10 * pulse) + noise * rand());
+    r.push(illum * 150 * (1 - 0.0010 * pulse) + noise * rand());
+    g.push(illum * 100 * (1 - 0.0035 * pulse) + noise * rand());
+    b.push(illum * 80 * (1 - 0.0024 * pulse) + noise * rand());
     ti += 1 / fps + jitter * rand();
   }
   return { t, r, g, b };
@@ -53,6 +53,21 @@ for (const bpm of [50, 72, 95, 130]) {
     assert.ok(res.spectral.snrDb > 3, `snr ${res.spectral.snrDb}`);
   });
 }
+
+test('output polarity follows blood volume (up = systole)', () => {
+  // Pulse is a narrow systolic bump, so the conventional-polarity waveform
+  // must be skewed upward (sharp peaks, broad troughs).
+  const fs = 30, t = [], r = [], g = [], b = [];
+  for (let i = 0; i < 20 * fs; i++) {
+    const ph = ((i / fs) * 1.2) % 1;
+    const v = Math.exp(-((ph - 0.2) ** 2) / (2 * 0.06 ** 2)); // blood volume
+    t.push(i / fs); r.push(150 * (1 - 0.001 * v)); g.push(100 * (1 - 0.0035 * v)); b.push(80 * (1 - 0.0024 * v));
+  }
+  const y = analyze({ t, r, g, b }).bvp.slice(60, -60);
+  const m = y.reduce((s, v) => s + v, 0) / y.length;
+  const skew = y.reduce((s, v) => s + (v - m) ** 3, 0) / y.length;
+  assert.ok(skew > 0, `skew ${skew}`);
+});
 
 test('pure noise yields low SNR', () => {
   const rand = rng(3);
