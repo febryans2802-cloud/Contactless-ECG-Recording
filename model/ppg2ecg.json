@@ -6,7 +6,29 @@
  "n_out": 960,
  "target_delay_s": 0.25,
  "trained_on": "BIDMC PPG and Respiration Dataset (PhysioNet), finger PPG -> ECG lead II",
- "training": {},
+ "training": {
+  "n_records": 35,
+  "excluded_records": [
+   "11",
+   "17",
+   "18",
+   "19",
+   "26",
+   "32",
+   "33",
+   "37",
+   "39",
+   "40",
+   "41",
+   "42",
+   "44",
+   "45",
+   "46",
+   "48",
+   "52",
+   "53"
+  ]
+ },
  "tensors": [
   {
    "name": "e1.0.weight",
