@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Contactless Pulse Recorder</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Contactless Pulse Recorder</h1>
+    <p class="sub">Camera-based remote photoplethysmography (rPPG)</p>
+  </header>
+
+  <div class="notice" role="note">
+    <strong>This is not an ECG.</strong> A camera picks up blood-volume changes in skin (a pulse wave), not
+    the heart's electrical activity. It gives you heart rate and beat timing, but no P/QRS/T waveform.
+    Research use only. It is not a medical device and must not be used for diagnosis.
+  </div>
+
+  <main>
+    <section class="video-wrap">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="status" class="status">Camera off</div>
+    </section>
+
+    <section class="panel">
+      <div class="metrics">
+        <div class="metric"><span class="label">Heart rate</span><span id="hr" class="value">--</span><span class="unit">bpm</span></div>
+        <div class="metric"><span class="label">Signal quality</span><span id="quality" class="value small">--</span><span id="snr" class="unit"></span></div>
+        <div class="metric"><span class="label">RMSSD</span><span id="rmssd" class="value small">--</span><span class="unit">ms</span></div>
+        <div class="metric"><span class="label">SDNN</span><span id="sdnn" class="value small">--</span><span class="unit">ms</span></div>
+      </div>
+
+      <div class="controls">
+        <button id="btnCamera">Start camera</button>
+        <button id="btnRecord" disabled>Start recording</button>
+        <span id="recTime" class="rec-time"></span>
+      </div>
+      <div class="controls">
+        <button id="btnCsv" disabled>Download CSV</button>
+        <button id="btnJson" disabled>Download summary (JSON)</button>
+      </div>
+
+      <details>
+        <summary>Tips for a clean signal</summary>
+        <ul>
+          <li>Even, steady, front-facing light. Avoid flicker from LED or fluorescent lights and avoid backlight.</li>
+          <li>Keep still and don't talk. Sit about 40–70 cm from the camera.</li>
+          <li>Show your forehead (move hair aside) and take off glasses if they cause glare.</li>
+          <li>Wait about 10 s for the reading to settle. Record at least 60 s if you want HRV.</li>
+        </ul>
+      </details>
+    </section>
+  </main>
+
+  <section class="chart-wrap">
+    <h2>Pulse waveform <span class="muted">(last 10 s, peaks = detected beats)</span></h2>
+    <canvas id="chart"></canvas>
+  </section>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,239 @@
+// Signal processing for remote photoplethysmography (rPPG).
+// Pure functions, no DOM access, so they can be unit-tested in Node.
+
+export const HR_MIN_HZ = 0.7; // 42 bpm
+export const HR_MAX_HZ = 4.0; // 240 bpm
+
+const mean = (a) => a.reduce((s, v) => s + v, 0) / (a.length || 1);
+const std = (a) => {
+  const m = mean(a);
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length || 1));
+};
+const median = (a) => {
+  if (!a.length) return NaN;
+  const s = [...a].sort((x, y) => x - y);
+  const k = s.length >> 1;
+  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
+};
+
+/**
+ * Linearly resample irregular samples onto a uniform grid.
+ * @param {number[]} t   timestamps in seconds (strictly increasing)
+ * @param {number[][]} channels  arrays aligned with t
+ * @param {number} fs    target sample rate (Hz)
+ */
+export function resample(t, channels, fs) {
+  if (t.length < 2) return { t: [], channels: channels.map(() => []) };
+  const t0 = t[0];
+  const n = Math.floor((t[t.length - 1] - t0) * fs) + 1;
+  const out = channels.map(() => new Array(n));
+  const tu = new Array(n);
+  let j = 0;
+  for (let i = 0; i < n; i++) {
+    const ti = t0 + i / fs;
+    tu[i] = ti;
+    while (j < t.length - 2 && t[j + 1] < ti) j++;
+    const span = t[j + 1] - t[j];
+    const w = span > 0 ? (ti - t[j]) / span : 0;
+    for (let c = 0; c < channels.length; c++) {
+      out[c][i] = channels[c][j] * (1 - w) + channels[c][j + 1] * w;
+    }
+  }
+  return { t: tu, channels: out };
+}
+
+/**
+ * POS (Plane-Orthogonal-to-Skin) pulse extraction.
+ * Wang, den Brinker, Stuijk, de Haan, IEEE TBME 64(7), 2017.
+ */
+export function pos(r, g, b, fs, windowSec = 1.6) {
+  const n = r.length;
+  const l = Math.max(2, Math.round(windowSec * fs));
+  const h = new Array(n).fill(0);
+  if (n < l) return h;
+  for (let start = 0; start + l <= n; start++) {
+    const R = r.slice(start, start + l);
+    const G = g.slice(start, start + l);
+    const B = b.slice(start, start + l);
+    const mr = mean(R), mg = mean(G), mb = mean(B);
+    if (!mr || !mg || !mb) continue;
+    const s1 = new Array(l), s2 = new Array(l);
+    for (let i = 0; i < l; i++) {
+      const rn = R[i] / mr, gn = G[i] / mg, bn = B[i] / mb;
+      s1[i] = gn - bn;
+      s2[i] = gn + bn - 2 * rn;
+    }
+    const sd2 = std(s2);
+    const alpha = sd2 > 1e-12 ? std(s1) / sd2 : 0;
+    const p = s1.map((v, i) => v + alpha * s2[i]);
+    const mp = mean(p);
+    for (let i = 0; i < l; i++) h[start + i] += p[i] - mp;
+  }
+  return h;
+}
+
+// RBJ audio-EQ-cookbook biquads.
+function biquad(type, f0, fs, q = Math.SQRT1_2) {
+  const w0 = (2 * Math.PI * f0) / fs;
+  const cos = Math.cos(w0), alpha = Math.sin(w0) / (2 * q);
+  let b0, b1, b2;
+  if (type === 'lowpass') {
+    b0 = (1 - cos) / 2; b1 = 1 - cos; b2 = (1 - cos) / 2;
+  } else {
+    b0 = (1 + cos) / 2; b1 = -(1 + cos); b2 = (1 + cos) / 2;
+  }
+  const a0 = 1 + alpha, a1 = -2 * cos, a2 = 1 - alpha;
+  return [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0];
+}
+
+function applyBiquad(x, [b0, b1, b2, a1, a2]) {
+  const y = new Array(x.length);
+  let x1 = x[0], x2 = x[0], y1 = 0, y2 = 0;
+  // Initialise state to steady state for a constant input equal to x[0].
+  const dc = (b0 + b1 + b2) / (1 + a1 + a2);
+  y1 = y2 = Number.isFinite(dc) ? dc * x[0] : 0;
+  for (let i = 0; i < x.length; i++) {
+    const v = b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x[i]; y2 = y1; y1 = v;
+    y[i] = v;
+  }
+  return y;
+}
+
+/** Zero-phase band-pass (4th-order Butterworth-style, run forward and backward). */
+export function bandpass(x, fs, lo = HR_MIN_HZ, hi = HR_MAX_HZ) {
+  if (x.length < 4) return [...x];
+  const stages = [
+    biquad('highpass', lo, fs), biquad('highpass', lo, fs),
+    biquad('lowpass', hi, fs), biquad('lowpass', hi, fs),
+  ];
+  const m = mean(x);
+  let y = x.map((v) => v - m);
+  for (const s of stages) y = applyBiquad(y, s);
+  y.reverse();
+  for (const s of stages) y = applyBiquad(y, s);
+  return y.reverse();
+}
+
+/** Hann-windowed periodogram evaluated on a fine frequency grid. */
+export function spectrum(x, fs, fLo = 0.5, fHi = 5, df = 0.01) {
+  const n = x.length;
+  const m = mean(x);
+  const w = x.map((v, i) => (v - m) * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1))));
+  const freqs = [], power = [];
+  for (let f = fLo; f <= fHi + 1e-9; f += df) {
+    let re = 0, im = 0;
+    const k = (2 * Math.PI * f) / fs;
+    for (let i = 0; i < n; i++) {
+      re += w[i] * Math.cos(k * i);
+      im -= w[i] * Math.sin(k * i);
+    }
+    freqs.push(f);
+    power.push(re * re + im * im);
+  }
+  return { freqs, power };
+}
+
+/**
+ * Heart rate from the spectral peak, plus an SNR (dB) in the style of
+ * de Haan & Jeanne 2013: power near f0 and 2·f0 vs. the rest of the band.
+ */
+export function spectralHR(x, fs) {
+  const { freqs, power } = spectrum(x, fs, 0.5, 2 * HR_MAX_HZ + 0.3);
+  let best = -1, bestP = -Infinity;
+  for (let i = 0; i < freqs.length; i++) {
+    if (freqs[i] < HR_MIN_HZ || freqs[i] > HR_MAX_HZ) continue;
+    if (power[i] > bestP) { bestP = power[i]; best = i; }
+  }
+  if (best < 0) return { bpm: NaN, snrDb: -Infinity, freqs, power };
+  const f0 = freqs[best];
+  let sig = 0, noise = 0;
+  for (let i = 0; i < freqs.length; i++) {
+    const f = freqs[i];
+    if (f < HR_MIN_HZ || f > 2 * HR_MAX_HZ) continue;
+    if (Math.abs(f - f0) <= 0.1 || Math.abs(f - 2 * f0) <= 0.2) sig += power[i];
+    else noise += power[i];
+  }
+  const snrDb = noise > 0 ? 10 * Math.log10(sig / noise) : Infinity;
+  return { bpm: f0 * 60, snrDb, freqs, power };
+}
+
+/**
+ * Systolic peak detection on a band-passed pulse signal.
+ * Returns peak positions in (fractional) samples, refined by parabolic interpolation.
+ */
+export function findPeaks(x, fs, maxBpm = HR_MAX_HZ * 60 * 0.75) {
+  const minDist = Math.round((60 / maxBpm) * fs);
+  const win = Math.max(3, Math.round(1.5 * fs));
+  const candidates = [];
+  for (let i = 1; i < x.length - 1; i++) {
+    if (!(x[i] > x[i - 1] && x[i] >= x[i + 1] && x[i] > 0)) continue;
+    // Local amplitude threshold: a fraction of the local positive envelope.
+    const a = Math.max(0, i - win), b = Math.min(x.length, i + win);
+    let localMax = 0;
+    for (let k = a; k < b; k++) if (x[k] > localMax) localMax = x[k];
+    if (x[i] < 0.3 * localMax) continue;
+    candidates.push(i);
+  }
+  // Enforce refractory period, keeping the larger peak.
+  const kept = [];
+  for (const i of candidates) {
+    const last = kept[kept.length - 1];
+    if (last !== undefined && i - last < minDist) {
+      if (x[i] > x[last]) kept[kept.length - 1] = i;
+    } else kept.push(i);
+  }
+  return kept.map((i) => {
+    const y0 = x[i - 1], y1 = x[i], y2 = x[i + 1];
+    const d = y0 - 2 * y1 + y2;
+    return d !== 0 ? i + (0.5 * (y0 - y2)) / d : i;
+  });
+}
+
+/**
+ * Inter-beat intervals and time-domain HRV.
+ * Intervals that are physiologically implausible or deviate >25% from the
+ * median are rejected (they are almost always detection errors in rPPG).
+ */
+export function hrv(peakSamples, fs) {
+  const ibi = [];
+  for (let i = 1; i < peakSamples.length; i++) ibi.push((peakSamples[i] - peakSamples[i - 1]) / fs);
+  const med = median(ibi);
+  const valid = ibi.map((v) => v >= 60 / (HR_MAX_HZ * 60) && v <= 60 / (HR_MIN_HZ * 60) && Math.abs(v - med) <= 0.25 * med);
+  const good = ibi.filter((_, i) => valid[i]);
+  const succ = [];
+  for (let i = 1; i < ibi.length; i++) if (valid[i] && valid[i - 1]) succ.push((ibi[i] - ibi[i - 1]) * 1000);
+  return {
+    ibi,
+    valid,
+    bpm: good.length ? 60 / mean(good) : NaN,
+    sdnnMs: good.length > 1 ? std(good) * 1000 : NaN,
+    rmssdMs: succ.length ? Math.sqrt(mean(succ.map((d) => d * d))) : NaN,
+    acceptedFraction: ibi.length ? good.length / ibi.length : 0,
+  };
+}
+
+/**
+ * Full pipeline: irregular RGB samples → uniform pulse waveform + metrics.
+ * @param {{t:number[], r:number[], g:number[], b:number[]}} s  t in seconds
+ */
+export function analyze(s, fs = 30) {
+  const { t, channels: [r, g, b] } = resample(s.t, [s.r, s.g, s.b], fs);
+  if (t.length < fs * 4) return null;
+  const raw = pos(r, g, b, fs);
+  const bvp = bandpass(raw, fs);
+  const sd = std(bvp) || 1;
+  const norm = bvp.map((v) => v / sd);
+  const spec = spectralHR(norm, fs);
+  const peaks = findPeaks(norm, fs);
+  const h = hrv(peaks, fs);
+  return { fs, t, rgb: { r, g, b }, bvp: norm, peaks, spectral: spec, hrv: h };
+}
+
+/** Coarse signal quality label from SNR. Thresholds are heuristic. */
+export function qualityLabel(snrDb) {
+  if (!Number.isFinite(snrDb)) return 'none';
+  if (snrDb >= 3) return 'good';
+  if (snrDb >= 0) return 'fair';
+  return 'poor';
+}
