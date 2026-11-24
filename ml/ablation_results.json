@@ -1,0 +1,38 @@
+{
+ "webcam": {
+  "model": {
+   "pearson_r_median_over_subjects": 0.254,
+   "r_peak_sensitivity": 0.872,
+   "r_peak_ppv": 0.955
+  },
+  "template": {
+   "pearson_r_median_over_subjects": 0.14,
+   "r_peak_sensitivity": 0.925,
+   "r_peak_ppv": 0.948
+  }
+ },
+ "wideband": {
+  "model": {
+   "pearson_r_median_over_subjects": 0.089,
+   "r_peak_sensitivity": 0.822,
+   "r_peak_ppv": 0.877
+  },
+  "template": {
+   "pearson_r_median_over_subjects": 0.16,
+   "r_peak_sensitivity": 0.954,
+   "r_peak_ppv": 0.964
+  }
+ },
+ "same_subject": {
+  "model": {
+   "pearson_r_median_over_subjects": 0.761,
+   "r_peak_sensitivity": 0.833,
+   "r_peak_ppv": 0.94
+  },
+  "template": {
+   "pearson_r_median_over_subjects": 0.252,
+   "r_peak_sensitivity": 0.912,
+   "r_peak_ppv": 0.92
+  }
+ }
+}
