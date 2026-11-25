@@ -15,9 +15,10 @@ changes (≈0.1–1% of pixel intensity) caused by blood volume changing with ea
 | Beat timing / inter-beat intervals | PR, QRS, QT intervals, ST segment |
 | Indicative HRV (long, clean recordings only) | Arrhythmia classification, ischaemia, anything diagnostic |
 
-The app *does* include an experimental **estimated ECG**: a neural network generates an ECG-shaped curve
-from the pulse. It's generated, not measured, and our own evaluation (below) shows it **does not reproduce
-an individual's real ECG**. It can't reveal an abnormality the pulse wave doesn't already show.
+The app includes a **rhythm view**: a generic ECG beat, averaged from other people's recordings, drawn at
+each detected pulse. It shows *when* your heart beats in a familiar ECG layout. It does **not** show what
+*your* ECG looks like, and it looks normal even when your real ECG isn't. (A neural network that tried to
+generate a personal ECG from the pulse was built and evaluated. It did no better than this, see below.)
 **It's not a medical device. Use it for research or education only.**
 
 ## Run it
@@ -52,10 +53,10 @@ Code layout:
 - `src/dsp.js`: all signal processing, pure functions, unit-tested
 - `src/roi.js`: face tracking, ROI geometry, skin-pixel averaging
 - `src/app.js`: camera, UI, recording, export
-- `src/ecgModel.js`: dependency-free inference for the estimated-ECG network
-- `ml/`: training/evaluation code for that network (PyTorch)
-- `model/`: exported weights (1.5 MB)
-- `test/`: `npm test` (Node ≥ 18); includes JS-vs-PyTorch and JS-vs-Python-filter parity checks
+- `src/ecgTemplate.js`: rhythm view (generic beat placed at each pulse)
+- `model/ecg_template.json`: the generic beat (built by `ml/export_template.py`)
+- `ml/`: data preparation, the PPG→ECG network experiment and its evaluation (PyTorch)
+- `test/`: `npm test` (Node ≥ 18); includes JS-vs-Python parity checks for the template and the filter
 
 ## Accuracy: measured limits
 
@@ -77,7 +78,17 @@ Chromium as a fake webcam):
 
 Signal quality labels (`good` ≥ 3 dB, `fair` ≥ 0 dB, `poor` < 0 dB SNR) are heuristic thresholds, not calibrated.
 
-## Estimated ECG (experimental): how it was built and how well it works
+## Rhythm view
+
+For each pulse peak the app detects, it draws the generic beat with its R-peak 258 ms earlier. That's the
+median R→finger-PPG delay in the re-aligned training data, a convention rather than a measurement. The beat
+is the average over 35 BIDMC patients after flipping records with inverted lead II, so it has the
+conventional upright R wave. (The baseline evaluated below averaged without flipping. Timing is identical.)
+In the cross-validation it found 92% of real R-peaks with a median timing error of 17 ms on clean finger
+PPG. On face video, beat accuracy depends on the rPPG beat detection, which hasn't been validated on real
+people. It's hidden while signal quality is "poor", because beats detected in noise are mostly wrong.
+
+## PPG→ECG network (evaluated, not used in the app)
 
 **Short version: on people it hasn't seen, the network is no better than pasting an average heartbeat at
 each detected pulse, and neither resembles the person's real ECG.**
@@ -129,8 +140,8 @@ same-subject splits measure memorisation.
 
 ### What this means
 
-- For a **new person**, the estimate is a generic ECG-like drawing, timed to the pulse. Option A (the
-  template) places beats more reliably and is simpler.
+- For a **new person**, the network's output is a generic ECG-like drawing, timed to the pulse. The
+  template places beats more reliably and is simpler, so **the app uses the template**.
 - With **paired calibration data from the same person** (e.g. a few minutes of chest-strap ECG recorded
   alongside the camera), a personalised model can reproduce that person's *usual* ECG shape (r ≈ 0.76 here).
   Even then, it shows what their ECG normally looks like. It can't show a *change*, which is usually
@@ -138,10 +149,16 @@ same-subject splits measure memorisation.
 - The face pulse at 30 Hz differs from the finger PPG used in training. The model has **not** been
   validated on face rPPG at all.
 
-Given pure noise, the model outputs a low-amplitude trace (std ≈ 0.2 vs ≈ 1 for real ECG) with sparse,
-irregular blips, not a clean rhythm. The app still hides the estimate when signal quality is "poor".
+- **Without the person's own ECG, nothing better is possible.** Their own average beat, pasted at their
+  pulses, matched their real ECG at median r = 0.61 (same-session data, so optimistic for an old printout).
+  The population average got 0.25. Someone else's ECG downloaded online is just another population template.
 
-Reproduce: `ml/download_bidmc.sh && cd ml && pip install -r requirements.txt && python3 train.py --data data && python3 export.py --ckpt checkpoints/final.pt`
+Given pure noise, the network outputs a low-amplitude trace (std ≈ 0.2 vs ≈ 1 for real ECG) with sparse,
+irregular blips, not a clean rhythm.
+
+Reproduce: `ml/download_bidmc.sh && cd ml && pip install -r requirements.txt && python3 train.py --data data`
+(CV + network), `python3 ablation.py data`, `python3 export_template.py --data data` (the app's template).
+`export.py` exports network weights in a JS-loadable format, but the app no longer includes a loader.
 
 ## Known limitations
 
