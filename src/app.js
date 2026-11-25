@@ -1,4 +1,4 @@
-import { analyze, qualityLabel } from './dsp.js';
+import { analyze } from './dsp.js';
 import { loadFaceDetector, meanSkinRGB, RoiTracker } from './roi.js';
 import { loadTemplate, synthesizeECG } from './ecgTemplate.js';
 
@@ -150,12 +150,12 @@ function updateLive(faceFound, skinOk) {
   const res = span >= 5 ? analyze(live, FS) : null;
   if (!res) { drawChart(null); if (ecgTpl) drawEcg(null, 'Waiting for signal…'); return; }
 
-  const q = qualityLabel(res.spectral.snrDb);
+  const q = res.quality.label;
   ui.quality.textContent = q;
   ui.quality.className = `value small q-${q}`;
-  ui.snr.textContent = `SNR ${res.spectral.snrDb.toFixed(1)} dB`;
+  ui.snr.textContent = qualityDetail(res);
 
-  if (q !== 'poor') hrHistory.push(res.spectral.bpm);
+  if (q !== 'poor') hrHistory.push(res.bpm);
   hrHistory = hrHistory.slice(-6);
   // Median of recent estimates suppresses single-window glitches.
   const sorted = [...hrHistory].sort((a, b) => a - b);
@@ -213,6 +213,7 @@ function stopRecording() {
 }
 
 function hrvReliable(res) {
+  // Deliberately spectral: HRV is only reported for a clean, steady rhythm.
   return res.t.length / res.fs >= 60 && res.spectral.snrDb >= 3 && res.hrv.acceptedFraction >= 0.8;
 }
 
@@ -228,10 +229,13 @@ function summary(res) {
     effectiveFps: +(f.length / Math.max(dur, 1e-9)).toFixed(2),
     faceTrackedFraction: +(f.filter((x) => x.face).length / (f.length || 1)).toFixed(3),
     heartRate: {
+      bpm: +res.bpm.toFixed(1),
+      source: res.quality.source === 'beats' ? 'mean beat rate (irregular or low-SNR rhythm)' : 'spectral peak',
       spectralBpm: +res.spectral.bpm.toFixed(1),
       peakBasedBpm: +res.hrv.bpm.toFixed(1),
       snrDb: +res.spectral.snrDb.toFixed(2),
-      quality: qualityLabel(res.spectral.snrDb),
+      quality: res.quality.label,
+      qualityDetail: { source: res.quality.source, bandPowerRatioDb: +res.quality.bandRatioDb.toFixed(2), beatShapeSqi: +res.quality.beatSqi.toFixed(3) },
     },
     hrv: {
       sdnnMs: round1(res.hrv.sdnnMs),
@@ -246,7 +250,7 @@ function summary(res) {
       templateSource: ecgTpl.source,
       sampleRateHz: ecgTpl.fs,
       timingConvention: `R-peaks drawn ${Math.round(ecgTpl.delay_s * 1000)} ms before each pulse peak by convention, not measured`,
-      drawnFromPoorSignal: qualityLabel(res.spectral.snrDb) === 'poor',
+      drawnFromPoorSignal: res.quality.label === 'poor',
     } : null,
     interBeatIntervalsS: res.hrv.ibi.map((v, i) => ({ ibi: +v.toFixed(4), accepted: res.hrv.valid[i] })),
   };
@@ -348,6 +352,11 @@ function drawEcg(y, message) {
 // ---------- helpers ----------
 
 function setStatus(s) { ui.status.textContent = s; }
+function qualityDetail(res) {
+  return res.quality.source === 'beats'
+    ? `beat shape ${res.quality.beatSqi.toFixed(2)} · SNR ${res.spectral.snrDb.toFixed(1)} dB`
+    : `SNR ${res.spectral.snrDb.toFixed(1)} dB`;
+}
 const fmt = (v) => (Number.isFinite(v) ? Math.round(v) : '--');
 const round1 = (v) => (Number.isFinite(v) ? +v.toFixed(1) : null);
 const fmtDuration = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;

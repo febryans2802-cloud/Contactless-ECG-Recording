@@ -3,6 +3,7 @@
 
 export const HR_MIN_HZ = 0.7; // 42 bpm
 export const HR_MAX_HZ = 4.0; // 240 bpm
+const BEAT_REFRACTORY_S = 0.3;  // fixed refractory for the rhythm-independent path (> ~0.23 s dicrotic delay)
 const HARMONIC_RATIO = 0.4;    // f/2 peak this strong relative to f -> treat f as a harmonic (sim: harmonics 0.47-0.73, noise <= 0.28)
 
 const mean = (a) => a.reduce((s, v) => s + v, 0) / (a.length || 1);
@@ -246,9 +247,88 @@ export function analyze(s, fs = 30) {
   const sd = std(bvp) || 1;
   const norm = bvp.map((v) => v / sd);
   const spec = spectralHR(norm, fs);
-  const peaks = findPeaks(norm, fs, spec.bpm / 60);
-  const h = hrv(peaks, fs);
-  return { fs, t, rgb: { r, g, b }, bvp: norm, peaks, spectral: spec, hrv: h };
+  // Two peak sets: one with a refractory period tied to the spectral HR (best
+  // for steady rhythms), one with a fixed 0.3 s refractory that does not rely
+  // on the spectral HR (which is unreliable when the rhythm is irregular).
+  const peaksSpectral = findPeaks(norm, fs, spec.bpm / 60);
+  const peaksFixed = findPeaks(norm, fs, 0.6 / BEAT_REFRACTORY_S);
+  const quality = assessQuality(raw, norm, peaksFixed, spec, fs);
+  // An irregular rhythm has no single spectral peak; when only the beat-based
+  // check passes, report the mean beat rate instead of the spectral peak.
+  const peaks = quality.source === 'beats' ? peaksFixed : peaksSpectral;
+  const bpm = quality.source === 'beats' ? meanBeatRate(peaks, fs) : spec.bpm;
+  return { fs, t, rgb: { r, g, b }, bvp: norm, peaks, spectral: spec, hrv: hrv(peaks, fs), quality, bpm };
+}
+
+/** 60 / mean of all physiologically plausible inter-beat intervals (no regularity filter). */
+export function meanBeatRate(peaks, fs) {
+  const ibi = [];
+  for (let i = 1; i < peaks.length; i++) {
+    const v = (peaks[i] - peaks[i - 1]) / fs;
+    if (v >= 1 / HR_MAX_HZ && v <= 1 / HR_MIN_HZ) ibi.push(v);
+  }
+  return ibi.length ? 60 / mean(ibi) : NaN;
+}
+
+/**
+ * Beat-shape consistency (template-matching SQI, after Li & Clifford 2012):
+ * mean correlation of each beat segment with the leave-one-out average beat.
+ * Band-passed noise aligned on its own maxima also scores ~0.8, so this is
+ * only used together with bandPowerRatioDb.
+ */
+export function beatSQI(y, peaks) {
+  const ibi = [];
+  for (let i = 1; i < peaks.length; i++) ibi.push(peaks[i] - peaks[i - 1]);
+  if (ibi.length < 3) return 0;
+  const med = median(ibi);
+  const pre = Math.round(0.3 * med), post = Math.round(0.5 * med);
+  const segs = peaks.map(Math.round).filter((p) => p - pre >= 0 && p + post < y.length).map((p) => y.slice(p - pre, p + post + 1));
+  const n = segs.length;
+  if (n < 4) return 0;
+  const L = segs[0].length;
+  const sum = new Array(L).fill(0);
+  for (const sg of segs) for (let i = 0; i < L; i++) sum[i] += sg[i];
+  const corr = (a, c) => {
+    const ma = mean(a), mc = mean(c);
+    let num = 0, da = 0, dc = 0;
+    for (let i = 0; i < L; i++) { num += (a[i] - ma) * (c[i] - mc); da += (a[i] - ma) ** 2; dc += (c[i] - mc) ** 2; }
+    return da && dc ? num / Math.sqrt(da * dc) : 0;
+  };
+  return segs.reduce((acc, sg) => acc + corr(sg, sum.map((v, i) => (v - sg[i]) / (n - 1))), 0) / n;
+}
+
+/**
+ * Power density in the cardiac band (0.7–4 Hz) relative to 4 Hz–Nyquist, in dB,
+ * on the un-filtered POS signal. A pulse concentrates power below 4 Hz whatever
+ * the rhythm; sensor noise spreads across the whole band. Motion is also
+ * in-band, which is why beatSQI is required as well.
+ */
+export function bandPowerRatioDb(raw, fs) {
+  const top = fs / 2 - 0.5;
+  const { freqs, power } = spectrum(raw, fs, HR_MIN_HZ, top, 0.05);
+  let inb = 0, out = 0;
+  freqs.forEach((f, i) => { if (f <= HR_MAX_HZ) inb += power[i]; else out += power[i]; });
+  if (!out) return Infinity;
+  return 10 * Math.log10((inb / (HR_MAX_HZ - HR_MIN_HZ)) / (out / (top - HR_MAX_HZ)));
+}
+
+/**
+ * Signal quality from two independent checks; the better one wins:
+ *  - spectral: SNR of the dominant frequency (rewards a steady rhythm)
+ *  - beats: band-power ratio AND beat-shape consistency (rhythm-independent,
+ *    so irregular rhythms are not marked poor just for being irregular)
+ * Thresholds were chosen on simulated data and checked on held-out seeds (see
+ * README): the beat path adds ~0.6% false accepts on pulse-free input, on top of
+ * the spectral path's ~2.9%. Not clinically calibrated.
+ */
+export function assessQuality(raw, bvp, peaks, spec, fs) {
+  const spectral = qualityLabel(spec.snrDb);
+  const bandDb = bandPowerRatioDb(raw, fs);
+  const sqi = beatSQI(bvp, peaks);
+  const beats = bandDb >= 5 && sqi >= 0.88 ? 'good' : bandDb >= 3.5 && sqi >= 0.88 ? 'fair' : 'poor';
+  const rank = { none: -1, poor: 0, fair: 1, good: 2 };
+  const useBeats = rank[beats] > rank[spectral];
+  return { label: useBeats ? beats : spectral, source: useBeats ? 'beats' : 'spectral', spectralSnrDb: spec.snrDb, bandRatioDb: bandDb, beatSqi: sqi };
 }
 
 /** Coarse signal quality label from SNR. Thresholds are heuristic. */

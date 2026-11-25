@@ -145,3 +145,56 @@ test('harmonic check does not halve genuine heart rates', () => {
     assert.ok(Math.abs(r2.spectral.bpm - bpm) < 5, `realistic ${bpm} bpm seed ${seed}: ${r2.spectral.bpm}`);
   }
 });
+
+// Irregularly irregular beat timing (AF-like) with realistic pulse shape.
+function irregular({ bpm, noise = 0.06, seconds = 20, seed = 1, motion = 0, pulse = true }) {
+  const rand = rng(seed);
+  const u01 = () => rand() + 0.5;
+  const gs = () => { let s = 0; for (let k = 0; k < 6; k++) s += rand(); return s * Math.SQRT2; };
+  const g = (x, m, sd) => Math.exp(-((x - m) ** 2) / (2 * sd * sd));
+  const beats = [];
+  for (let x = 0.3; x < seconds + 2; x += (60 / bpm) * (0.62 + 0.76 * u01())) beats.push(x);
+  const t = [], r = [], gg = [], b = [];
+  let m = 0, tgt = 0;
+  for (let i = 0; i < seconds * 30; i++) {
+    const tt = i / 30;
+    let v = 0;
+    if (pulse) for (const bt of beats) { const u = tt - bt; if (u >= 0 && u < 1.1) v += g(u, 0.13, 0.055) + 0.38 * g(u, 0.36, 0.07) + 0.12 * g(u, 0.55, 0.12); }
+    if (motion && u01() < 0.02) tgt = (u01() - 0.5) * motion;
+    m += (tgt - m) * 0.08;
+    t.push(tt);
+    r.push(182 * (1 + m) * (1 - 0.001 * v) + noise * gs());
+    gg.push(132 * (1 + m) * (1 + 0.3 * m) * (1 - 0.0035 * v) + noise * gs());
+    b.push(112 * (1 + m) * (1 - 0.0024 * v) + noise * gs());
+  }
+  const inWin = beats.filter((x) => x < seconds);
+  const meanIbi = (inWin[inWin.length - 1] - inWin[0]) / (inWin.length - 1);
+  return { s: { t, r, g: gg, b }, trueBpm: 60 / meanIbi };
+}
+
+test('irregular rhythm with a clean signal is not marked poor, and HR is the mean beat rate', () => {
+  for (const bpm of [70, 92, 130]) for (let seed = 1; seed <= 4; seed++) {
+    const { s, trueBpm } = irregular({ bpm, seed });
+    const a = analyze(s);
+    assert.notEqual(a.quality.label, 'poor', `${bpm} bpm seed ${seed}: ${JSON.stringify(a.quality)}`);
+    assert.equal(a.quality.source, 'beats');
+    assert.ok(Math.abs(a.bpm - trueBpm) / trueBpm < 0.08, `${bpm} bpm seed ${seed}: reported ${a.bpm.toFixed(1)}, true ${trueBpm.toFixed(1)}`);
+  }
+});
+
+test('beat-based check rarely accepts a pulse-free signal (with or without motion)', () => {
+  // Held-out simulation measured ~0.6% false accepts for this path; allow up to 2% here.
+  let accepted = 0, total = 0;
+  for (let seed = 1; seed <= 50; seed++) for (const [noise, motion] of [[0.06, 0], [0.3, 0], [0.06, 0.03], [0.3, 0.03]]) {
+    const q = analyze(irregular({ bpm: 80, seed, noise, motion, pulse: false }).s).quality;
+    total++;
+    if (q.source === 'beats' && q.label !== 'poor') accepted++;
+  }
+  assert.ok(accepted / total <= 0.02, `${accepted}/${total} pulse-free windows accepted by the beat path`);
+});
+
+test('steady rhythm still uses the spectral estimate', () => {
+  const a = analyze(synth({ bpm: 72 }));
+  assert.equal(a.quality.source, 'spectral');
+  assert.equal(a.bpm, a.spectral.bpm);
+});

@@ -162,9 +162,21 @@ Reproduce: `ml/download_bidmc.sh && cd ml && pip install -r requirements.txt && 
 
 ## Known limitations
 
-- **Irregular rhythms score as poor quality.** Signal quality is spectral SNR, which rewards a steady rhythm.
-  Irregular beat timing (e.g. atrial fibrillation) spreads the power and drops the score even when beats are
-  detected well, so heart rate and the rhythm view are hidden. A beat-shape based quality index would fix this.
+- **Signal quality is the better of two checks.** (1) Spectral SNR, which only works for a steady rhythm.
+  (2) A rhythm-independent check that needs both pulse-band power (0.7–4 Hz vs 4–15 Hz on the unfiltered
+  POS signal, ≥ 3.5 dB) *and* consistent beat shapes (template-matching SQI ≥ 0.88). Neither alone is enough:
+  band-passed noise lined up on its own peaks scores SQI ≈ 0.8, and motion puts power in-band. When check (2)
+  is the one that passes, heart rate is the mean beat rate, because an irregular rhythm has no single
+  spectral peak. On held-out simulated 10 s windows:
+
+  | | Old (spectral only) | Now |
+  |---|---|---|
+  | Irregular-rhythm windows shown | 10 / 150 | 63 / 150, none with < 50% of beats right |
+  | Steady-rhythm windows shown | 80 / 150 | 80 / 150 (unchanged) |
+  | Pulse-free windows accepted | 46 / 1600 (2.9%) | 55 / 1600 (3.4%), 1 as "good" |
+
+  Thresholds were tuned on simulated data and need checking against real recordings. HRV still requires
+  spectral SNR ≥ 3 dB, so it's only reported for steady rhythms.
 - **Beat detection was tightened after testing on realistic pulse shapes.** The refractory period is now 60%
   of the spectral beat period, so the dicrotic wave isn't counted as a beat, and a harmonic check stops the
   spectral HR locking onto twice the true rate. On simulated realistic pulses at ~0 dB SNR, about 2–15% of

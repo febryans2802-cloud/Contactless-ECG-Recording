@@ -169,7 +169,7 @@ details ul { padding-left: 18px; }
       <span class="legend">Generic ECG shape, not yours and not measured</span></div>
     <canvas id="rhythm" aria-label="Rhythm view: generic ECG beat drawn at each detected pulse"></canvas>
     <p class="caption">One average beat (from 35 other people) is drawn 258 ms before each detected pulse. It shows when beats happen, not
-      what an ECG looks like. It hides itself when quality is poor, including (a current limitation) during irregular rhythms.</p>
+      what an ECG looks like. Try the irregular-rhythm scenario: the timing goes irregular, the shape stays generic.</p>
   </section>
 
   <section class="panel results" id="results" hidden>
@@ -193,9 +193,10 @@ details ul { padding-left: 18px; }
           once realistic noise is added.</li>
         <li>The rhythm view is hidden whenever quality is poor, because beats found in noise are mostly wrong and a
           tidy ECG drawn on them would mislead.</li>
-        <li>Quality comes from how concentrated the pulse is at one frequency. An irregular rhythm spreads that out, so
-          it scores "poor" even when beats are detected well. A beat-shape based quality score would fix this; the app
-          doesn't have one yet.</li>
+        <li>Quality is the better of two checks. One measures how concentrated the pulse is at one frequency, which
+          only works for a steady rhythm. The other needs both pulse-band power and consistent beat shapes, so it
+          also works for irregular rhythms. Neither is perfect: about 3% of pulse-free 10 s windows still pass as
+          "fair" in simulation.</li>
       </ul>
     </details>
   </section>
@@ -208,7 +209,7 @@ details ul { padding-left: 18px; }
 const SCENARIOS = {
   rest: { name: 'Resting', hr: 68, noise: 10, desc: 'Seated, still, even light. Normal sinus rhythm with breathing-related variation.', irregular: false, rsa: 0.06 },
   exercise: { name: 'After exercise', hr: 118, noise: 15, desc: 'Fast heart rate right after climbing stairs. Small breathing variation.', irregular: false, rsa: 0.015 },
-  irregular: { name: 'Irregular rhythm', hr: 92, noise: 10, desc: 'Irregularly irregular beat timing, as in atrial fibrillation. Beats are still found, but the quality score drops because it rewards a steady rhythm, so the rhythm view often hides itself. This is a known limitation of the app.', irregular: true, rsa: 0 },
+  irregular: { name: 'Irregular rhythm', hr: 92, noise: 10, desc: 'Irregularly irregular beat timing, as in atrial fibrillation. Quality is judged on beat shape here, since there is no steady rhythm to measure. The rhythm view shows the irregular timing; the beat shape stays generic.', irregular: true, rsa: 0 },
   poor: { name: 'Poor light & motion', hr: 76, noise: 85, desc: 'Head movement, flickering light and a dim room. Quality drops and the rhythm view hides itself.', irregular: false, rsa: 0.04 },
 };
 const PTT = 0.20;          // R-peak to face pulse foot, seconds (simulation constant)
@@ -286,10 +287,10 @@ function analyzeLive() {
   if (span < 5) { setStatus(`Collecting… ${Math.max(0, 5 - span).toFixed(0)} s`); return null; }
   const res = analyze(live, FS);
   if (!res) return null;
-  const q = qualityLabel(res.spectral.snrDb);
+  const q = res.quality.label;
   $('mQ').innerHTML = `<span class="pill q-${q}">${q}</span>`;
-  $('mSnr').textContent = `SNR ${res.spectral.snrDb.toFixed(1)} dB`;
-  if (q !== 'poor') hrHist.push(res.spectral.bpm);
+  $('mSnr').textContent = qualityDetail(res);
+  if (q !== 'poor') hrHist.push(res.bpm);
   hrHist = hrHist.slice(-6);
   const s = [...hrHist].sort((a, b) => a - b);
   $('mHr').textContent = s.length ? Math.round(s[s.length >> 1]) : '--';
@@ -297,6 +298,11 @@ function analyzeLive() {
   return { res, q };
 }
 function setStatus(s) { $('status').textContent = s; }
+function qualityDetail(res) {
+  return res.quality.source === 'beats'
+    ? `beat shape ${res.quality.beatSqi.toFixed(2)} · SNR ${res.spectral.snrDb.toFixed(1)} dB`
+    : `SNR ${res.spectral.snrDb.toFixed(1)} dB`;
+}
 
 // ---------------- drawing ----------------
 const camState = { faceJitter: 0 };
@@ -407,7 +413,7 @@ function toggleRec() {
 function hrvReliable(res) { return res.t.length / res.fs >= 60 && res.spectral.snrDb >= 3 && res.hrv.acceptedFraction >= 0.8; }
 
 function showResults(res, r) {
-  const dur = res.t.length / res.fs, q = qualityLabel(res.spectral.snrDb), ok = hrvReliable(res);
+  const dur = res.t.length / res.fs, q = res.quality.label, ok = hrvReliable(res);
   // Beat detection vs simulator truth (pulse peak = beat + PTT + 0.13 s), within 75 ms.
   const truth = sim.beats.map((b) => b + PTT + 0.13 - r.t0).filter((t) => t > 0.5 && t < dur - 0.5);
   const det = res.peaks.map((p) => p / res.fs);
@@ -419,8 +425,8 @@ function showResults(res, r) {
   $('mSdnn').textContent = ok ? fmt(res.hrv.sdnnMs) : 'n/a';
   const items = [
     ['Duration', `${dur.toFixed(0)} s`, 'simulated time'],
-    ['Heart rate', `${res.spectral.bpm.toFixed(0)} bpm`, `peak-based ${res.hrv.bpm.toFixed(0)} bpm`],
-    ['Signal quality', q, `SNR ${res.spectral.snrDb.toFixed(1)} dB`],
+    ['Heart rate', `${res.bpm.toFixed(0)} bpm`, res.quality.source === 'beats' ? 'mean beat rate' : 'spectral peak'],
+    ['Signal quality', q, qualityDetail(res)],
     ['HRV', ok ? `${fmt(res.hrv.rmssdMs)} ms` : 'withheld', ok ? `RMSSD · SDNN ${fmt(res.hrv.sdnnMs)} ms` : 'needs ≥ 60 s, SNR ≥ 3 dB, ≥ 80% clean'],
     ['Beats found', `${hit} / ${truth.length}`, 'true beats matched within 75 ms (demo only)'],
     ['False beats', `${extra}`, 'detections with no true beat (demo only)'],
@@ -438,7 +444,7 @@ function showResults(res, r) {
     type: 'rPPG pulse recording (NOT an electrocardiogram) · DEMO, simulated input',
     method: 'POS (Wang et al. 2017), 0.7–4 Hz zero-phase band-pass, resampled to 30 Hz',
     durationS: +dur.toFixed(2),
-    heartRate: { spectralBpm: +res.spectral.bpm.toFixed(1), peakBasedBpm: +res.hrv.bpm.toFixed(1), snrDb: +res.spectral.snrDb.toFixed(2), quality: q },
+    heartRate: { bpm: +res.bpm.toFixed(1), source: res.quality.source === 'beats' ? 'mean beat rate' : 'spectral peak', spectralBpm: +res.spectral.bpm.toFixed(1), snrDb: +res.spectral.snrDb.toFixed(2), quality: q, beatShapeSqi: +res.quality.beatSqi.toFixed(3), bandPowerRatioDb: +res.quality.bandRatioDb.toFixed(2) },
     hrv: { sdnnMs: ok ? +res.hrv.sdnnMs.toFixed(1) : null, rmssdMs: ok ? +res.hrv.rmssdMs.toFixed(1) : null, beatsDetected: res.peaks.length, meetsReliabilityCriteria: ok },
     rhythmView: { warning: 'NOT a measured ECG and NOT your ECG shape. A population-average beat is drawn at each detected pulse.', timingConvention: `R-peaks drawn ${Math.round(ECG_TEMPLATE.delay_s * 1000)} ms before each pulse peak by convention` },
   };
