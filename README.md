@@ -21,6 +21,14 @@ each detected pulse. It shows *when* your heart beats in a familiar ECG layout. 
 generate a personal ECG from the pulse was built and evaluated. It did no better than this, see below.)
 **It's not a medical device. Use it for research or education only.**
 
+## Website
+
+Once GitHub Pages is enabled (Settings → Pages → Source: **GitHub Actions**), every push to the default branch
+runs the tests and publishes the app to `https://febryans2802-cloud.github.io/Contactless-ECG-Recording/`
+(`.github/workflows/pages.yml`). Only the app, the rhythm template and the demo are published, not the training
+code or tests. Everything runs in the visitor's browser and no video is uploaded. The face detector is fetched
+from jsDelivr and Google's model storage.
+
 ## Run it
 
 The camera API needs `https://` or `localhost`.

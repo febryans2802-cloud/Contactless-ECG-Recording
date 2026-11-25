@@ -14,5 +14,14 @@ const shell = read('demo/shell.html');
 
 const lib = `// ---- inlined from src/dsp.js ----\n${dsp}\n// ---- inlined from src/ecgTemplate.js ----\n${tplSrc}\n` +
   `const ECG_TEMPLATE = ${JSON.stringify({ ...tpl, beat: undefined })};\nECG_TEMPLATE.beat = Float32Array.from(${JSON.stringify(tpl.beat)});\n`;
-writeFileSync(new URL('demo/index.html', root), shell.replace('/*__LIB__*/', () => lib));
-console.log('wrote demo/index.html');
+let page = shell.replace('/*__LIB__*/', () => lib);
+// --standalone: a complete HTML document for ordinary static hosting (GitHub Pages).
+// Without it the file is a page body for claude.ai, which adds the document wrapper itself.
+if (process.argv.includes('--standalone')) {
+  page = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n' +
+    '<style>body{margin:0}[hidden]{display:none!important}</style>\n</head>\n<body>\n' + page + '\n</body>\n</html>\n';
+}
+const out = process.argv.includes('--out') ? process.argv[process.argv.indexOf('--out') + 1] : 'demo/index.html';
+writeFileSync(new URL(out, root), page);
+console.log('wrote ' + out);

@@ -3,3 +3,5 @@ node_modules/
 ml/data/
 ml/checkpoints/
 __pycache__/
+demo/standalone.html
+_site/
