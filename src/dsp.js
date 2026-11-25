@@ -3,6 +3,7 @@
 
 export const HR_MIN_HZ = 0.7; // 42 bpm
 export const HR_MAX_HZ = 4.0; // 240 bpm
+const HARMONIC_RATIO = 0.4;    // f/2 peak this strong relative to f -> treat f as a harmonic (sim: harmonics 0.47-0.73, noise <= 0.28)
 
 const mean = (a) => a.reduce((s, v) => s + v, 0) / (a.length || 1);
 const std = (a) => {
@@ -152,6 +153,17 @@ export function spectralHR(x, fs) {
     if (power[i] > bestP) { bestP = power[i]; best = i; }
   }
   if (best < 0) return { bpm: NaN, snrDb: -Infinity, freqs, power };
+  // A sharp systolic upstroke puts a lot of power in the 2nd harmonic, which can
+  // beat the fundamental. If there is a clear peak near f/2, prefer it.
+  const half = freqs[best] / 2;
+  if (half >= HR_MIN_HZ) {
+    let hi = -1, hp = -Infinity;
+    for (let i = 0; i < freqs.length; i++) {
+      if (Math.abs(freqs[i] - half) <= 0.08 && power[i] > hp) { hp = power[i]; hi = i; }
+    }
+    const isLocalMax = hi > 0 && hi < freqs.length - 1 && power[hi] >= power[hi - 1] && power[hi] >= power[hi + 1];
+    if (isLocalMax && hp >= HARMONIC_RATIO * bestP) best = hi;
+  }
   const f0 = freqs[best];
   let sig = 0, noise = 0;
   for (let i = 0; i < freqs.length; i++) {
@@ -168,8 +180,11 @@ export function spectralHR(x, fs) {
  * Systolic peak detection on a band-passed pulse signal.
  * Returns peak positions in (fractional) samples, refined by parabolic interpolation.
  */
-export function findPeaks(x, fs, maxBpm = HR_MAX_HZ * 60 * 0.75) {
-  const minDist = Math.round((60 / maxBpm) * fs);
+export function findPeaks(x, fs, hrHz = NaN) {
+  // Refractory period: 60% of the beat period when the heart rate is known, so
+  // the dicrotic wave and noise bumps between beats are not counted as beats;
+  // otherwise a fixed 180 bpm limit.
+  const minDist = Math.max(2, Math.round((Number.isFinite(hrHz) ? 0.6 / hrHz : 60 / (HR_MAX_HZ * 60 * 0.75)) * fs));
   const win = Math.max(3, Math.round(1.5 * fs));
   const candidates = [];
   for (let i = 1; i < x.length - 1; i++) {
@@ -231,7 +246,7 @@ export function analyze(s, fs = 30) {
   const sd = std(bvp) || 1;
   const norm = bvp.map((v) => v / sd);
   const spec = spectralHR(norm, fs);
-  const peaks = findPeaks(norm, fs);
+  const peaks = findPeaks(norm, fs, spec.bpm / 60);
   const h = hrv(peaks, fs);
   return { fs, t, rgb: { r, g, b }, bvp: norm, peaks, spectral: spec, hrv: h };
 }

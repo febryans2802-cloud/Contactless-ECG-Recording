@@ -162,6 +162,15 @@ Reproduce: `ml/download_bidmc.sh && cd ml && pip install -r requirements.txt && 
 
 ## Known limitations
 
+- **Irregular rhythms score as poor quality.** Signal quality is spectral SNR, which rewards a steady rhythm.
+  Irregular beat timing (e.g. atrial fibrillation) spreads the power and drops the score even when beats are
+  detected well, so heart rate and the rhythm view are hidden. A beat-shape based quality index would fix this.
+- **Beat detection was tightened after testing on realistic pulse shapes.** The refractory period is now 60%
+  of the spectral beat period, so the dicrotic wave isn't counted as a beat, and a harmonic check stops the
+  spectral HR locking onto twice the true rate. On simulated realistic pulses at ~0 dB SNR, about 2–15% of
+  beats are still missed (more at higher heart rates).
+- **Demo:** `demo/index.html` (built by `node demo/build.mjs` from `demo/shell.html`) runs the same DSP on a
+  simulated face signal with known true beats. It's useful for showing the app without a camera.
 - The face detector loads from a CDN (jsDelivr + Google Storage). Offline, the app falls back to a fixed
   forehead box you have to position yourself in.
 - Camera exposure/white-balance lock only works where the browser exposes it (mostly Chrome on Android).

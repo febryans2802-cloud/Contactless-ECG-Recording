@@ -102,3 +102,46 @@ test('hrv rejects outlier intervals', () => {
   assert.ok(Math.abs(h.bpm - 60) < 1e-9);
   assert.ok(h.acceptedFraction < 1);
 });
+
+// Realistic pulse morphology: sharp systolic peak, dicrotic wave, slow decay.
+function realistic({ bpm, dicrotic = 0.38, noise = 0.15, seconds = 60, seed = 3 }) {
+  const rand = rng(seed);
+  const gs = () => { let s = 0; for (let k = 0; k < 6; k++) s += rand(); return s * Math.SQRT2; }; // ~N(0,1)
+  const g = (x, m, sd) => Math.exp(-((x - m) ** 2) / (2 * sd * sd));
+  const beats = [];
+  for (let x = 0.3; x < seconds + 2; x += (60 / bpm) * (1 + 0.06 * Math.sin(2 * Math.PI * 0.25 * x))) beats.push(x);
+  const t = [], r = [], gg = [], b = [];
+  for (let i = 0; i < seconds * 30; i++) {
+    const tt = i / 30;
+    let v = 0;
+    for (const bt of beats) { const u = tt - bt; if (u >= 0 && u < 1.1) v += g(u, 0.13, 0.055) + dicrotic * g(u, 0.36, 0.07) + 0.12 * g(u, 0.55, 0.12); }
+    t.push(tt); r.push(182 * (1 - 0.001 * v) + noise * gs()); gg.push(132 * (1 - 0.0035 * v) + noise * gs()); b.push(112 * (1 - 0.0024 * v) + noise * gs());
+  }
+  return { s: { t, r, g: gg, b }, nBeats: beats.filter((x) => x < seconds).length };
+}
+
+test('dicrotic wave is not counted as an extra beat', () => {
+  for (const bpm of [50, 68, 90]) {
+    const { s, nBeats } = realistic({ bpm });
+    const a = analyze(s);
+    // No extra beats from the dicrotic wave; some misses are expected at this SNR (~0 dB).
+    assert.ok(a.peaks.length <= 1.05 * nBeats, `${bpm} bpm: ${a.peaks.length} peaks vs ${nBeats} beats (extra beats)`);
+    assert.ok(a.peaks.length >= 0.85 * nBeats, `${bpm} bpm: ${a.peaks.length} peaks vs ${nBeats} beats (missed beats)`);
+    assert.ok(Math.abs(a.hrv.bpm - bpm) < 5, `${bpm} bpm: peak-based ${a.hrv.bpm}`);
+  }
+});
+
+test('sharp pulse without dicrotic wave: spectral HR picks the fundamental, not the 2nd harmonic', () => {
+  const { s } = realistic({ bpm: 68, dicrotic: 0, noise: 0 });
+  assert.ok(Math.abs(analyze(s).spectral.bpm - 68) < 2);
+});
+
+test('harmonic check does not halve genuine heart rates', () => {
+  for (const bpm of [90, 110, 140]) for (let seed = 1; seed <= 8; seed++) {
+    const r = analyze(synth({ bpm, noise: 0.5, seed, seconds: 15 }));
+    assert.ok(Math.abs(r.spectral.bpm - bpm) < 3, `${bpm} bpm seed ${seed}: ${r.spectral.bpm}`);
+    const { s } = realistic({ bpm, seed, seconds: 15 });
+    const r2 = analyze(s);
+    assert.ok(Math.abs(r2.spectral.bpm - bpm) < 5, `realistic ${bpm} bpm seed ${seed}: ${r2.spectral.bpm}`);
+  }
+});
