@@ -16,13 +16,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # Build and deploy are separate jobs: deploying in the same job right after
+  # the upload failed with "No artifacts named github-pages" (the upload had
+  # not registered yet).
+  build:
     # Deploy only from the repository's default branch, whatever it is called.
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,10 +40,17 @@ jobs:
           mkdir -p _site/model _site/demo
           cp model/ecg_template.json _site/model/
           cp demo/standalone.html _site/demo/index.html
-          touch _site/.nojekyll
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
